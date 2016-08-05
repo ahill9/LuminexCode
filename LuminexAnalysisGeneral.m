@@ -1,15 +1,12 @@
-%Analysis of Proliferative samples July 2016
-clear; clc; close all
-
-%% Input
-%Must modify this section for each assay:
-filename='D:\OneDrive\Research\0C Triculture Christi\Exp7\ProlifPrimary_CellLines_Compare_revised.xlsx';
-standardLot = 64020782;
-standardDilutions = 1/3;
+function LuminexAnalysisGeneral(analysisName, expDir, filename, standardLot, standardDilutions)
 
 %% Import Data
+cd(expDir) 
+warning('off','MATLAB:xlswrite:AddSheet')
 beadCounts=readtable(filename,'Sheet','BeadCounts','ReadRowNames',false);
+beadCounts.Properties.VariableNames = regexprep(beadCounts.Properties.VariableNames,'[-_.]','');
 sampleMFI = readtable(filename,'Sheet','SampleMFI','ReadRowNames',false);
+sampleMFI.Properties.VariableNames = regexprep(sampleMFI.Properties.VariableNames,'[-_.]','');
 sampleMFI{1:end,2:end}(beadCounts{1:end,2:end}<50)=NaN; %Remove MFIs with low bead counts
 
 standardLabels = {'S0','S01','S02','S03','S04','S05','S06','S07','S08','S09','S10','S11','S12','S13','S14','S15','S16'}; %Possible sample names for standards
@@ -21,8 +18,12 @@ blankMFI = sampleMFI(ismember(sampleMFI{:,1},blankLabels),:);
 sampleMFIsorted = sampleMFI(~ismember(sampleMFI{:,1},[standardLabels,blankLabels]),:);
 [~, idx] = sort(sampleMFIsorted{:,1});
 sampleMFIsorted = sampleMFIsorted(idx,:);
-[sorted, sortIdx] = sort(sampleMFIsorted.Properties.VariableNames(2:end));
+[~, sortIdx] = sort(sampleMFIsorted.Properties.VariableNames(2:end));
 sampleMFIsorted = sampleMFIsorted(:,[1,sortIdx+1]);
+standardMFIsorted = standardMFI(:,[1,sortIdx+1]);
+blankMFIsorted = blankMFI(:,[1,sortIdx+1]);
+blank0s=zeros(size(blankMFIsorted));
+Cytokines = regexprep(sampleMFIsorted.Properties.VariableNames(2:end),'_','-');
 
 %Check for outliers in standard MFIs
 %*********************************************************************************
@@ -32,21 +33,38 @@ sampleMFIsorted = sampleMFIsorted(:,[1,sortIdx+1]);
 %**********************************************************************************
 
 %Read in standard concentrations
-standardTable = readtable('D:\OneDrive\Research\Protocols\Luminex\LuminexStandards.xlsx');
-standardConc=standardTable(standardTable{:,1}==standardLot,:);
+standardTable = readtable('D:\OneDrive\Research\Protocols\Luminex\LuminexStandards.xlsx','Sheet',standardLot{1});
+standardConc=standardTable(standardTable{:,1}==standardLot{2},:);
+standardConc.Properties.VariableNames = regexprep(standardConc.Properties.VariableNames,'_','');
 [sorted, sortIdx] = sort(standardConc.Properties.VariableNames(2:end));
 standardConcSorted = standardConc(:,[1,sortIdx+1]);
 %Calculate concentrations of standards
-currDilution = 1; standards = unique(standardMFI{:,1});
-dilutionFactor=table(standardMFI{:,1},ones(length(standardMFI{:,1}),1));
+currDilution = 1; standards = unique(standardMFIsorted{:,1});
+dilutionFactor=table(standardMFIsorted{:,1},ones(length(standardMFIsorted{:,1}),1));
 for n = 1:length(standards)
     dilutionFactor{strcmp(dilutionFactor{:,1},standards(n)),2}=currDilution;
     currDilution = currDilution*standardDilutions;
-end
+en
 allStandardsConc = dilutionFactor{:,2}*standardConcSorted{1,2:end};
 allStandardsConc = [array2table(dilutionFactor{:,1}),array2table(allStandardsConc)];
 allStandardsConc.Properties.VariableNames = ['Standard',standardTable.Properties.VariableNames(2:end)];
-allStandardsConc.Name = dilutionFactor(:,1);
+
+%Check that samples and standards match up
+assert(isequal(standardMFIsorted.Properties.VariableNames(2:end),sampleMFIsorted.Properties.VariableNames(2:end)),'Analyte names do not match')
+assert(isequal(standardMFIsorted.Properties.VariableNames(2:end),allStandardsConc.Properties.VariableNames(2:end)),'Analyte names do not match')
+assert(isequal(standardMFIsorted.Properties.VariableNames(2:end),blankMFIsorted.Properties.VariableNames(2:end)),'Analyte names do not match')
+
+%% Write useful stuff to file so you have it saved
+sampleMFIsortedSTABLE=sampleMFIsorted;
+standardMFIsortedSTABLE=standardMFIsorted;
+currDateTime=datestr(now,'yyyy_mm_dd_HH_MM');
+mkdir(cd,[analysisName,'_',currDateTime]); cd([analysisName,'_',currDateTime])
+outFileName=[analysisName,'_',currDateTime,'.xlsx'];
+writetable(sampleMFIsortedSTABLE,outFileName,'Sheet','sampleMFI')
+writetable(standardMFIsortedSTABLE,outFileName,'Sheet','standardMFI')
+writetable(allStandardsConc,outFileName,'Sheet','trueStandardsConc')
+
+
 %% Method 1: Fit 5-parameter logistic curves to standards, omitting blanks
 sampleConc_1 = sampleMFIsorted; sampleConc_1{1:end,2:end}=0;
 A=zeros(1,size(sampleConc_1,2)-1); B=A; C=A; D=A; E=A; %initialize
@@ -74,3 +92,5 @@ end
 meanSampleConcTab_1 = sampleConc_1(1:length(uniqueSampleNames),:);
 meanSampleConcTab_1{:,1} = uniqueSampleNames;
 meanSampleConcTab_1{:,2:end} = meanSampleConc_1;
+
+end
