@@ -9,166 +9,10 @@ filename='ProlifPrimary_CellLines_Compare_revised.xlsx';
 standardLot = {'27plex',64020782};
 standardDilutions = 1/3;
 
-%% Import Data
-cd(expDir) 
-warning('off','MATLAB:xlswrite:AddSheet')
-beadCounts=readtable(filename,'Sheet','BeadCounts','ReadRowNames',false);
-beadCounts.Properties.VariableNames = regexprep(beadCounts.Properties.VariableNames,'[-_.]','');
-sampleMFI = readtable(filename,'Sheet','SampleMFI','ReadRowNames',false);
-sampleMFI.Properties.VariableNames = regexprep(sampleMFI.Properties.VariableNames,'[-_.]','');
-sampleMFI{1:end,2:end}(beadCounts{1:end,2:end}<50)=NaN; %Remove MFIs with low bead counts
-
-standardLabels = {'S0','S01','S02','S03','S04','S05','S06','S07','S08','S09','S10','S11','S12','S13','S14','S15','S16'}; %Possible sample names for standards
-blankLabels = {'Blank','blank','BLANK'};
-standardMFI = sampleMFI(ismember(sampleMFI{:,1},standardLabels),:);
-[~, idx] = sort(standardMFI{:,1});
-standardMFI = standardMFI(idx,:);
-blankMFI = sampleMFI(ismember(sampleMFI{:,1},blankLabels),:);
-sampleMFIsorted = sampleMFI(~ismember(sampleMFI{:,1},[standardLabels,blankLabels]),:);
-[~, idx] = sort(sampleMFIsorted{:,1});
-sampleMFIsorted = sampleMFIsorted(idx,:);
-[~, sortIdx] = sort(sampleMFIsorted.Properties.VariableNames(2:end));
-sampleMFIsorted = sampleMFIsorted(:,[1,sortIdx+1]);
-standardMFIsorted = standardMFI(:,[1,sortIdx+1]);
-blankMFIsorted = blankMFI(:,[1,sortIdx+1]);
-blank0s=zeros(size(blankMFIsorted));
-Cytokines = regexprep(sampleMFIsorted.Properties.VariableNames(2:end),'_','-');
-
-%Check for outliers in standard MFIs
-%*********************************************************************************
-%To Do
-%Grubbs test a nice balance of easy+appropriate, but supposed to be for >6
-%replicates; see also http://bmcbioinformatics.biomedcentral.com/articles/10.1186/1471-2105-7-123
-%**********************************************************************************
-
-%Read in standard concentrations
-standardTable = readtable('D:\OneDrive\Research\Protocols\Luminex\LuminexStandards.xlsx','Sheet',standardLot{1});
-standardConc=standardTable(standardTable{:,1}==standardLot{2},:);
-standardConc.Properties.VariableNames = regexprep(standardConc.Properties.VariableNames,'_','');
-[sorted, sortIdx] = sort(standardConc.Properties.VariableNames(2:end));
-standardConcSorted = standardConc(:,[1,sortIdx+1]);
-%Calculate concentrations of standards
-currDilution = 1; standards = unique(standardMFIsorted{:,1});
-dilutionFactor=table(standardMFIsorted{:,1},ones(length(standardMFIsorted{:,1}),1));
-for n = 1:length(standards)
-    dilutionFactor{strcmp(dilutionFactor{:,1},standards(n)),2}=currDilution;
-    currDilution = currDilution*standardDilutions;
-end
-allStandardsConc = dilutionFactor{:,2}*standardConcSorted{1,2:end};
-allStandardsConc = [array2table(dilutionFactor{:,1}),array2table(allStandardsConc)];
-allStandardsConc.Properties.VariableNames = ['Standard',standardTable.Properties.VariableNames(2:end)];
-
-%Check that samples and standards match up
-assert(isequal(standardMFIsorted.Properties.VariableNames(2:end),sampleMFIsorted.Properties.VariableNames(2:end)),'Analyte names do not match')
-assert(isequal(standardMFIsorted.Properties.VariableNames(2:end),allStandardsConc.Properties.VariableNames(2:end)),'Analyte names do not match')
-assert(isequal(standardMFIsorted.Properties.VariableNames(2:end),blankMFIsorted.Properties.VariableNames(2:end)),'Analyte names do not match')
-
-%% Write useful stuff to file so you have it saved
-sampleMFIsortedSTABLE=sampleMFIsorted;
-standardMFIsortedSTABLE=standardMFIsorted;
-currDateTime=datestr(now,'yyyy_mm_dd_HH_MM');
-mkdir(cd,[analysisName,'_',currDateTime]); cd([analysisName,'_',currDateTime])
-outFileName=[analysisName,'_',currDateTime,'.xlsx'];
-writetable(sampleMFIsortedSTABLE,outFileName,'Sheet','sampleMFI')
-writetable(standardMFIsortedSTABLE,outFileName,'Sheet','standardMFI')
-writetable(allStandardsConc,outFileName,'Sheet','trueStandardsConc')
-
-%% Method 1: Fit 5-parameter logistic curves to standards, omitting blanks
-warning('off','L5P:IgnorningNansAndInfs')
-sampleMFIsorted=sampleMFIsortedSTABLE;
-standardMFIsorted=standardMFIsortedSTABLE;
-sampleConc_1 = sampleMFIsorted; sampleConc_1{1:end,2:end}=0;
-A=zeros(1,size(sampleConc_1,2)-1); B=A; C=A; D=A; E=A; %initialize
-flag=zeros(size(sampleConc_1,1),size(sampleConc_1,2)-1);
-sampleMFIadj=sampleMFIsorted;
-for c=1:size(sampleConc_1,2)-1
-    [cf{c} gf{c}] = L5P(allStandardsConc{1:end,c+1},standardMFIsorted{1:end,c+1}); 
-    A(c)=cf{c}.A; B(c)=cf{c}.B; C(c)=cf{c}.C; D(c)=cf{c}.D; E(c)=cf{c}.E;
-    flag(sampleMFIsorted{:,c+1}<A(c),c)=-1; sampleMFIadj{sampleMFIsorted{:,c+1}<A(c),c+1}=A(c); 
-    flag(sampleMFIsorted{:,c+1}>D(c),c)=1; sampleMFIadj{sampleMFIsorted{:,c+1}>D(c),c+1}=0.99*D(c); 
-    sampleConc_1{:,c+1} = L5Pinv(cf{c},sampleMFIadj{:,c+1});
-    rsquares(c) = gf{c}.rsquare;
-end
-%Average replicates - assumes that sample replicates have identical names,
-%omit NaNs
-% **********************************************************************
-% To Do: check for bad wells (e.g. no sample added? all MFIs lower than
-% blank?)
-% **********************************************************************
-uniqueSampleNames = unique(sampleMFIsorted{:,1});
-meanSampleConc_1 = zeros(length(uniqueSampleNames),size(sampleConc_1,2)-1);
-for sampleIdx=1:length(uniqueSampleNames)
-    meanSampleConc_1(sampleIdx,:) = mean(sampleMFIsorted{strcmp(sampleMFIsorted{:,1},uniqueSampleNames(sampleIdx)),2:end},1,'omitnan');
-end
-meanSampleConcTab_1 = sampleConc_1(1:length(uniqueSampleNames),:);
-meanSampleConcTab_1{:,1} = uniqueSampleNames;
-meanSampleConcTab_1{:,2:end} = meanSampleConc_1;
-
-%% Method 2: Fit 5-parameter logistic curves to standards + blanks
-sampleMFIsorted=sampleMFIsortedSTABLE;
-standardMFIsorted=standardMFIsortedSTABLE;
-sampleConc_2 = sampleMFIsorted; sampleConc_2{1:end,2:end}=0;
-A=zeros(1,size(sampleConc_2,2)-1); B=A; C=A; D=A; E=A; %initialize
-flag=zeros(size(sampleConc_2,1),size(sampleConc_2,2)-1);
-sampleMFIadj=sampleMFIsorted;
-for c=1:size(sampleConc_2,2)-1
-    [cf{c},gf{c}] = L5P([allStandardsConc{1:end,c+1};blank0s(:,c+1)],[standardMFIsorted{1:end,c+1};blankMFIsorted{1:end,c+1}]); 
-    A(c)=cf{c}.A; B(c)=cf{c}.B; C(c)=cf{c}.C; D(c)=cf{c}.D; E(c)=cf{c}.E;
-    flag(sampleMFIsorted{:,c+1}<A(c),c)=-1; sampleMFIadj{sampleMFIsorted{:,c+1}<A(c),c+1}=A(c); 
-    flag(sampleMFIsorted{:,c+1}>D(c),c)=1; sampleMFIadj{sampleMFIsorted{:,c+1}>D(c),c+1}=0.99*D(c); 
-    sampleConc_2{:,c+1} = L5Pinv(cf{c},sampleMFIadj{:,c+1});
-    rsquares(c) = gf{c}.rsquare;
-end
-%Average replicates - assumes that sample replicates have identical names,
-%omit NaNs
-% **********************************************************************
-% To Do: check for bad wells (e.g. no sample added? all MFIs lower than
-% blank?)
-% **********************************************************************
-uniqueSampleNames = unique(sampleMFIsorted{:,1});
-meanSampleConc_2 = zeros(length(uniqueSampleNames),size(sampleConc_2,2)-1);
-for sampleIdx=1:length(uniqueSampleNames)
-    meanSampleConc_2(sampleIdx,:) = mean(sampleMFIsorted{strcmp(sampleMFIsorted{:,1},uniqueSampleNames(sampleIdx)),2:end},1,'omitnan');
-end
-meanSampleConcTab_2 = sampleConc_2(1:length(uniqueSampleNames),:);
-meanSampleConcTab_2{:,1} = uniqueSampleNames;
-meanSampleConcTab_2{:,2:end} = meanSampleConc_2;
-
-%% Method 3: Subtract blank MFI, then fit 5-parameter logistic curve (ignore negatives)
-sampleMFIsorted=sampleMFIsortedSTABLE;
-standardMFIsorted=standardMFIsortedSTABLE;
-sampleConc_3 = sampleMFIsorted; sampleConc_3{1:end,2:end}=0;
-A=zeros(1,size(sampleConc_3,2)-1); B=A; C=A; D=A; E=A; %initialize
-flag=zeros(size(sampleConc_3,1),size(sampleConc_3,2)-1);
-sampleMFIadj=sampleMFIsorted;
-sampleMFIsorted{:,2:end} = gsubtract(sampleMFIsorted{:,2:end},mean(blankMFIsorted{:,2:end}));
-standardMFIsorted{:,2:end}=gsubtract(standardMFIsorted{:,2:end},mean(blankMFIsorted{:,2:end}));
-for c=1:size(sampleConc_3,2)-1
-    [cf{c},gf{c}] = L5P([allStandardsConc{1:end,c+1};blank0s(:,c+1)],[standardMFIsorted{1:end,c+1};blankMFIsorted{1:end,c+1}]); 
-    A(c)=cf{c}.A; B(c)=cf{c}.B; C(c)=cf{c}.C; D(c)=cf{c}.D; E(c)=cf{c}.E;
-    flag(sampleMFIsorted{:,c+1}<A(c),c)=-1; sampleMFIadj{sampleMFIsorted{:,c+1}<A(c),c+1}=A(c); 
-    flag(sampleMFIsorted{:,c+1}>D(c),c)=1; sampleMFIadj{sampleMFIsorted{:,c+1}>D(c),c+1}=0.99*D(c); 
-    sampleConc_3{:,c+1} = L5Pinv(cf{c},sampleMFIadj{:,c+1});
-    rsquares(c) = gf{c}.rsquare;
-end
-%Average replicates - assumes that sample replicates have identical names,
-%omit NaNs
-% **********************************************************************
-% To Do: check for bad wells (e.g. no sample added? all MFIs lower than
-% blank?)
-% **********************************************************************
-uniqueSampleNames = unique(sampleMFIsorted{:,1});
-meanSampleConc_3 = zeros(length(uniqueSampleNames),size(sampleConc_3,2)-1);
-for sampleIdx=1:length(uniqueSampleNames)
-    meanSampleConc_3(sampleIdx,:) = mean(sampleMFIsorted{strcmp(sampleMFIsorted{:,1},uniqueSampleNames(sampleIdx)),2:end},1,'omitnan');
-end
-meanSampleConcTab_3 = sampleConc_3(1:length(uniqueSampleNames),:);
-meanSampleConcTab_3{:,1} = uniqueSampleNames;
-meanSampleConcTab_3{:,2:end} = meanSampleConc_3;
-
+LuminexAnalysisGeneral %Calculates concentrations
 
 %% Specific to this experiment
-meanSampleConcTab = meanSampleConcTab_1; %Select which method to use for plots
+meanSampleConcTab = meanSampleConcTab_1; %Select which fitting method to use for plots
 figuresFilename = 'exp7figures_3.ps';
 [~, ~, ~, ~, ~, bhpvals0188day7v15] = makeLuminexSuperbarPlot(meanSampleConcTab,'0188 D7 1','0188 D15 1','0188 Day 7 vs. Day 15 No Stim','paired');
 print(gcf, '-dpsc', figuresFilename);
@@ -213,13 +57,14 @@ print(gcf, '-dpsc', figuresFilename,'-append')
     sample5 = meanSampleConcTab(cellfun(@length,sample5temp(:))>0,:);
     [h,p]=ttest2([mean(sample1{:,2:end},1);mean(sample2{:,2:end},1)],[mean(sample3{:,2:end},1);mean(sample4{:,2:end},1);mean(sample5{:,2:end},1)]);
     bhpvals = mafdr(p,'BHFDR',true);
-    pvals4plot = zeros(2*length(bhpvals),2*length(bhpvals))/0;
+    pvals4plot = zeros(5*length(bhpvals),5*length(bhpvals))/0;
     for n = 1:size(sample1,2)-1
-        pvals4plot(n,27+n) = bhpvals(n); pvals4plot(27+n,n) = bhpvals(n);
+        pvals4plot(n,3*27+n) = bhpvals(n); pvals4plot(3*27+n,n) = bhpvals(n);
     end
     figure
     [hb, ~, ~, ~, ~] = superbar(1:27,[mean(sample1{:,2:end});mean(sample2{:,2:end});mean(sample3{:,2:end});mean(sample4{:,2:end});mean(sample5{:,2:end})]',...
         'E',[std(sample1{:,2:end});std(sample2{:,2:end});std(sample3{:,2:end});std(sample4{:,2:end});std(sample5{:,2:end})]',...
+        'P',pvals4plot,...
         'BarFaceColor',permute([0.2, 0.8, 0.8; 0.4,0.6,0.6; .8, 0.2, 0.2; 0.7,0.3,0.3; 0.6,0.4,0.4],[3,1,2]),...
         'ErrorbarColor','k');
     xlabel('Cytokine'); ylabel('Concentration (pg/mL)'); title('Cell Lines and Primaries All Days 6-8')
@@ -227,7 +72,175 @@ print(gcf, '-dpsc', figuresFilename,'-append')
     legend(hb(1,1:5),{'Cell Lines 1','Cell Lines 2','Primary 0188','Primary 0190','Primary 0191'})
 print(gcf, '-dpsc', figuresFilename,'-append')
 
+%% Comparing only equivalent cell line experiment, with all replicates of each donor
+    sample1temp = regexp(uniqueSampleNames,'CL D6 [5-6][1-6]');
+    sample1 = meanSampleConcTab(cellfun(@length,sample1temp(:))>0,:);
+    
+    sample3temp = regexp(uniqueSampleNames,'0188 D7 [1-2]');
+    sample3 = meanSampleConcTab(cellfun(@length,sample3temp(:))>0,:);
+    sample4temp = regexp(uniqueSampleNames,'0190 D8 [1-2]');
+    sample4 = meanSampleConcTab(cellfun(@length,sample4temp(:))>0,:);
+    sample5temp = regexp(uniqueSampleNames,'0191 D7 [1-2]');
+    sample5 = meanSampleConcTab(cellfun(@length,sample5temp(:))>0,:);
+    [h,p1]=ttest2(sample1{:,2:end},sample3{:,2:end},'vartype','unequal');
+    bhpvals1 = mafdr(p1,'BHFDR',true);
+    [h,p2]=ttest2(sample1{:,2:end},sample4{:,2:end},'vartype','unequal');
+    bhpvals2 = mafdr(p2,'BHFDR',true);
+    [h,p3]=ttest2(sample1{:,2:end},sample5{:,2:end},'vartype','unequal');
+    bhpvals3 = mafdr(p3,'BHFDR',true);
+    pvals4plot = zeros(4*length(bhpvals),4*length(bhpvals))/0;
+    for n = 1:27
+        pvals4plot(n,27+n)=bhpvals1(n); pvals4plot(27+n,n)=bhpvals1(n);
+        pvals4plot(n,2*27+n)=bhpvals2(n); pvals4plot(2*27+n,n)=bhpvals2(n);
+        pvals4plot(n,3*27+n)=bhpvals3(n); pvals4plot(3*27+n,n)=bhpvals3(n);
+    end 
+    pvals4plot(pvals4plot>0.05)=NaN;
 
+    figure
+    [hb, ~, ~, ~, ~] = superbar(1:27,[mean(sample1{:,2:end});mean(sample3{:,2:end});mean(sample4{:,2:end});mean(sample5{:,2:end})]',...
+        'E',[std(sample1{:,2:end});std(sample3{:,2:end});std(sample4{:,2:end});std(sample5{:,2:end})]',...
+        'P',pvals4plot,'PLineColor',[1,1,1],'PLineWidth',0.01,...
+        'BarFaceColor',permute([0.2, 0.8, 0.8; .8, 0.2, 0.2; 0.7,0.3,0.3; 0.6,0.4,0.4],[3,1,2]),...
+        'ErrorbarColor','k','PStarShowNS',false,'PStarShowGT',false,'PStarColor',[.2,.8,.8],'PStarOffset',0);
+    xlabel('Cytokine'); ylabel('Concentration (pg/mL)'); title('Cell Lines and Primaries All Days 6-8')
+    set(gca,'XTick',1:27,'XTickLabel',Cytokines,'XTickLabelRotation',90);
+    legend(hb(1,1:4),{'Cell Lines 1','Primary 0188','Primary 0190','Primary 0191'})
+    print(gcf, '-dpsc', figuresFilename,'-append')
+    
+% No pvals
+    figure
+    [hb, ~, ~, ~, ~] = superbar(1:27,[mean(sample1{:,2:end});mean(sample3{:,2:end});mean(sample4{:,2:end});mean(sample5{:,2:end})]',...
+        'E',[std(sample1{:,2:end});std(sample3{:,2:end});std(sample4{:,2:end});std(sample5{:,2:end})]',...
+        'BarFaceColor',permute([0.2, 0.8, 0.8; .8, 0.2, 0.2; 0.7,0.3,0.3; 0.6,0.4,0.4],[3,1,2]),...
+        'ErrorbarColor','k');
+    xlabel('Cytokine'); ylabel('Concentration (pg/mL)'); title('Cell Lines and Primaries All Days 6-8')
+    set(gca,'XTick',1:27,'XTickLabel',Cytokines,'XTickLabelRotation',90);
+    legend(hb(1,1:4),{'Cell Lines 1','Primary 0188','Primary 0190','Primary 0191'})
+    print(gcf, '-dpsc', figuresFilename,'-append')
+
+ %Split into 3 panels based on magnitude
+    [~,max_data_idx] = sort(max([mean(sample1{:,2:end});mean(sample3{:,2:end});mean(sample4{:,2:end});mean(sample5{:,2:end})]));
+    data_A_idx = max_data_idx(1:9);
+    data_B_idx = max_data_idx(10:18);
+    data_C_idx = max_data_idx(19:27);
+    figure
+    subplot(1,3,1)
+    [hb, ~, ~, ~, ~] = superbar(1:9,[mean(sample1{:,data_A_idx+1});mean(sample3{:,data_A_idx+1});mean(sample4{:,data_A_idx+1});mean(sample5{:,data_A_idx+1})]',...
+        'E',[std(sample1{:,data_A_idx+1});std(sample3{:,data_A_idx+1});std(sample4{:,data_A_idx+1});std(sample5{:,data_A_idx+1})]',...
+        'BarFaceColor',permute([0.2, 0.8, 0.8; .8, 0.2, 0.2; 0.7,0.3,0.3; 0.6,0.4,0.4],[3,1,2]),...
+        'ErrorbarColor','k');
+    xlabel('Cytokine'); ylabel('Concentration (pg/mL)'); title('Cell Lines and Primaries All Days 6-8')
+    set(gca,'XTick',1:9,'XTickLabel',Cytokines(data_A_idx),'XTickLabelRotation',90);
+    legend(hb(1,1:4),{'Cell Lines 1','Primary 0188','Primary 0190','Primary 0191'})
+    print(gcf, '-dpsc', figuresFilename,'-append')
+    
+        subplot(1,3,2)
+    [hb, ~, ~, ~, ~] = superbar(1:9,[mean(sample1{:,data_B_idx+1});mean(sample3{:,data_B_idx+1});mean(sample4{:,data_B_idx+1});mean(sample5{:,data_B_idx+1})]',...
+        'E',[std(sample1{:,data_B_idx+1});std(sample3{:,data_B_idx+1});std(sample4{:,data_B_idx+1});std(sample5{:,data_B_idx+1})]',...
+        'BarFaceColor',permute([0.2, 0.8, 0.8; .8, 0.2, 0.2; 0.7,0.3,0.3; 0.6,0.4,0.4],[3,1,2]),...
+        'ErrorbarColor','k');
+    xlabel('Cytokine'); ylabel('Concentration (pg/mL)'); title('Cell Lines and Primaries All Days 6-8')
+    set(gca,'XTick',1:9,'XTickLabel',Cytokines(data_B_idx),'XTickLabelRotation',90);
+    legend(hb(1,1:4),{'Cell Lines 1','Primary 0188','Primary 0190','Primary 0191'})
+    print(gcf, '-dpsc', figuresFilename,'-append')
+    
+        subplot(1,3,3)
+    [hb, ~, ~, ~, ~] = superbar(1:9,[mean(sample1{:,data_C_idx+1});mean(sample3{:,data_C_idx+1});mean(sample4{:,data_C_idx+1});mean(sample5{:,data_C_idx+1})]',...
+        'E',[std(sample1{:,data_C_idx+1});std(sample3{:,data_C_idx+1});std(sample4{:,data_C_idx+1});std(sample5{:,data_C_idx+1})]',...
+        'BarFaceColor',permute([0.2, 0.8, 0.8; .8, 0.2, 0.2; 0.7,0.3,0.3; 0.6,0.4,0.4],[3,1,2]),...
+        'ErrorbarColor','k');
+    xlabel('Cytokine'); ylabel('Concentration (pg/mL)'); title('Cell Lines and Primaries All Days 6-8')
+    set(gca,'XTick',1:9,'XTickLabel',Cytokines(data_C_idx),'XTickLabelRotation',90);
+    legend(hb(1,1:4),{'Cell Lines 1','Primary 0188','Primary 0190','Primary 0191'})
+    print(gcf, '-dpsc', figuresFilename,'-append')
+
+    % Sorted all on one axis
+    figure
+    [hb, ~, ~, ~, ~] = superbar(1:27,[mean(sample1{:,max_data_idx+1});mean(sample3{:,max_data_idx+1});mean(sample4{:,max_data_idx+1});mean(sample5{:,max_data_idx+1})]',...
+        'E',[std(sample1{:,max_data_idx+1});std(sample3{:,max_data_idx+1});std(sample4{:,max_data_idx+1});std(sample5{:,max_data_idx+1})]',...
+        'BarFaceColor',permute([0.2, 0.8, 0.8; .8, 0.2, 0.2; 0.7,0.3,0.3; 0.6,0.4,0.4],[3,1,2]),...
+        'ErrorbarColor','k');
+    xlabel('Cytokine'); ylabel('Concentration (pg/mL)'); title('Cell Lines and Primaries All Days 6-8')
+    set(gca,'XTick',1:27,'XTickLabel',Cytokines(max_data_idx),'XTickLabelRotation',90);
+    legend(hb(1,1:4),{'Cell Lines 1','Primary 0188','Primary 0190','Primary 0191'})
+    print(gcf, '-dpsc', figuresFilename,'-append')
+    
+    % Log Scale
+    figure
+    logData = log10([mean(sample1{:,max_data_idx+1});mean(sample3{:,max_data_idx+1});mean(sample4{:,max_data_idx+1});mean(sample5{:,max_data_idx+1})]);
+    logPosStdevs = log10([mean(sample1{:,max_data_idx+1});mean(sample3{:,max_data_idx+1});mean(sample4{:,max_data_idx+1});mean(sample5{:,max_data_idx+1})]+[std(sample1{:,max_data_idx+1});std(sample3{:,max_data_idx+1});std(sample4{:,max_data_idx+1});std(sample5{:,max_data_idx+1})])-logData;
+    logNegStdevs = log10([mean(sample1{:,max_data_idx+1});mean(sample3{:,max_data_idx+1});mean(sample4{:,max_data_idx+1});mean(sample5{:,max_data_idx+1})]-[std(sample1{:,max_data_idx+1});std(sample3{:,max_data_idx+1});std(sample4{:,max_data_idx+1});std(sample5{:,max_data_idx+1})])-logData;
+    logBothStdevs(:,:,1) = logNegStdevs;
+    logBothStdevs(:,:,2) = logPosStdevs;
+    logBothStdevs(:,:,1)=0; %Only show positive error bars
+    [hb, ~, ~, ~, ~] = superbar(1:27,logData',...
+        'E',logBothStdevs,...
+        'BarFaceColor',permute([0.2, 0.8, 0.8; .8, 0.2, 0.2; 0.7,0.3,0.3; 0.6,0.4,0.4],[3,1,2]),...
+        'ErrorbarColor','k');
+     xlabel('Cytokine'); ylabel('Concentration (pg/mL)'); title('Cell Lines and Primaries All Days 6-8')
+     set(gca,'XTick',1:27,'XTickLabel',Cytokines(max_data_idx),'XTickLabelRotation',90);
+     legend(hb(1,1:4),{'Cell Lines 1','Primary 0188','Primary 0190','Primary 0191'})
+     print(gcf, '-dpsc', figuresFilename,'-append')
+     
+tableS2 = table(mean(sample1{:,2:end})');
+tableS2.Properties.VariableNames={'CellLines'};
+tableS2.Subject0188 = mean(sample3{:,2:end})';
+%tableS2.Subject0188vCellLines = bhpvals1';
+tableS2.Subject0190 = mean(sample4{:,2:end})';
+%tableS2.Subject0190vCellLines = bhpvals2';
+tableS2.Subject0191 = mean(sample5{:,2:end})';
+%tableS2.Subject0191vCellLines = bhpvals3';
+tableS2.Properties.RowNames = {sample1.Properties.VariableNames{2:end}};
+%Comparison among subjects
+[h,p4]=ttest2(sample3{:,2:end},sample4{:,2:end},'vartype','unequal');
+[h,p5]=ttest2(sample3{:,2:end},sample5{:,2:end},'vartype','unequal');
+[h,p6]=ttest2(sample4{:,2:end},sample5{:,2:end},'vartype','unequal');
+combinedPvals = [p1,p2,p3,p4,p5,p6];
+bhCombinedPvals = mafdr(combinedPvals, 'BHFDR',1);
+bhPvals = [bhCombinedPvals(1:27)', bhCombinedPvals(27+1:2*27)', bhCombinedPvals(2*27+1:3*27)', bhCombinedPvals(3*27+1:4*27)', bhCombinedPvals(4*27+1:5*27)', bhCombinedPvals(5*27+1:6*27)']
+tableS2.CellLinesVs0188 = bhPvals(:,1);
+tableS2.CellLinesVs0190 = bhPvals(:,2);
+tableS2.CellLinesVs0191 = bhPvals(:,3);
+tableS2.s0188Vs0190 = bhPvals(:,4);
+tableS2.s0188Vs0191 = bhPvals(:,5);
+tableS2.s0190Vs0191 = bhPvals(:,6);
+
+%% Stim vs. Unstim Table
+% Primary Day 15-16 samples, stim and unstim
+    sample1temp = regexp(uniqueSampleNames,'0188 D15 2');
+    sample1 = meanSampleConcTab(cellfun(@length,sample1temp(:))>0,:);
+    sample2temp = regexp(uniqueSampleNames,'0188 D15 1');
+    sample2 = meanSampleConcTab(cellfun(@length,sample2temp(:))>0,:);
+    [~,pvals0188] = ttest2(sample1{:,2:end},sample2{:,2:end},'vartype','unequal');
+    bhpvals0188 = mafdr(pvals0188,'BHFDR',1);
+    
+    sample3temp = regexp(uniqueSampleNames,'0190 D16 2');
+    sample3 = meanSampleConcTab(cellfun(@length,sample3temp(:))>0,:);
+    sample4temp = regexp(uniqueSampleNames,'0190 D16 1');
+    sample4 = meanSampleConcTab(cellfun(@length,sample4temp(:))>0,:);
+    [~,pvals0190] = ttest2(sample3{:,2:end},sample4{:,2:end},'vartype','unequal');
+    bhpvals0190 = mafdr(pvals0190,'BHFDR',1);
+    
+    sample5temp = regexp(uniqueSampleNames,'0191 D15 2');
+    sample5 = meanSampleConcTab(cellfun(@length,sample5temp(:))>0,:);
+    sample6temp = regexp(uniqueSampleNames,'0191 D15 1');
+    sample6 = meanSampleConcTab(cellfun(@length,sample6temp(:))>0,:);
+    [~,pvals0191] = ttest2(sample5{:,2:end},sample6{:,2:end},'vartype','unequal');
+    bhpvals0191 = mafdr(pvals0191,'BHFDR',1);
+    
+    tableS3 = table(mean(sample1{:,2:end},'omitnan')');
+    tableS3.Properties.VariableNames = {'s0188unstim'};
+    tableS3.s0188stim = mean(sample2{:,2:end},'omitnan')';
+    tableS3.pVals0188 = bhpvals0188';
+    tableS3.s0190unstim = mean(sample3{:,2:end},'omitnan')';
+    tableS3.s0190stim = mean(sample4{:,2:end},'omitnan')';
+    tableS3.pVals0190 = bhpvals0190';
+    tableS3.s0191unstim = mean(sample5{:,2:end},'omitnan')';
+    tableS3.s0191stim = mean(sample6{:,2:end},'omitnan')';
+    tableS3.pVals0191 = bhpvals0191';
+    tableS3.Properties.RowNames = {sample1.Properties.VariableNames{2:end}};
+    
+    
 %% Specific cytokines
 
 %IL-10
@@ -350,109 +363,3 @@ xlabel('IL-15'); ylabel('Concentration (pg/mL)'); title('IL-15 Primaries')
 set(gca,'XTick',1:3,'XTickLabel',Labels,'XTickLabelRotation',90);
 axis([0,4,0,3600])
 %legend(hb(1,1:4),{'Early, No Stim','Early, Pre-Stim','Late, No Stim','Late, Post-Stim'})
-
-
-%IL-8
-figure
-sample1temp = regexp(uniqueSampleNames,'0188 D7 2');
-earlyNoStim0188 = meanSampleConcTab.IL8(cellfun(@length,sample1temp(:))>0,:);
-sample1temp = regexp(uniqueSampleNames,'0188 D7 1');
-earlyUnStim0188 = meanSampleConcTab.IL8(cellfun(@length,sample1temp(:))>0,:);
-sample1temp = regexp(uniqueSampleNames,'0188 D15 2');
-lateNoStim0188 = meanSampleConcTab.IL8(cellfun(@length,sample1temp(:))>0,:);
-sample1temp = regexp(uniqueSampleNames,'0188 D15 1');
-lateStim0188 = meanSampleConcTab.IL8(cellfun(@length,sample1temp(:))>0,:);
-
-sample2temp = regexp(uniqueSampleNames,'0190 D8 2');
-earlyNoStim0190 = meanSampleConcTab.IL8(cellfun(@length,sample2temp(:))>0,:);
-sample2temp = regexp(uniqueSampleNames,'0190 D8 1');
-earlyUnStim0190 = meanSampleConcTab.IL8(cellfun(@length,sample2temp(:))>0,:);
-sample2temp = regexp(uniqueSampleNames,'0190 D16 2');
-lateNoStim0190 = meanSampleConcTab.IL8(cellfun(@length,sample2temp(:))>0,:);
-sample2temp = regexp(uniqueSampleNames,'0190 D16 1');
-lateStim0190 = meanSampleConcTab.IL8(cellfun(@length,sample2temp(:))>0,:);
-
-sample3temp = regexp(uniqueSampleNames,'0191 D7 2');
-earlyNoStim0191= meanSampleConcTab.IL8(cellfun(@length,sample3temp(:))>0,:);
-sample3temp = regexp(uniqueSampleNames,'0191 D7 1');
-earlyUnStim0191= meanSampleConcTab.IL8(cellfun(@length,sample3temp(:))>0,:);
-sample3temp = regexp(uniqueSampleNames,'0191 D15 2');
-lateNoStim0191= meanSampleConcTab.IL8(cellfun(@length,sample3temp(:))>0,:);
-sample3temp = regexp(uniqueSampleNames,'0191 D15 1');
-lateStim0191= meanSampleConcTab.IL8(cellfun(@length,sample3temp(:))>0,:);
-
-Labels = {'0188','0190','0191'};
-
-
-IL8pvals = NaN*ones(12,12);
-IL8pvals(4,10)=bhpvals0191preVpostStim(strcmp(Cytokines,'IL8'));
-IL8pvals(10,4)=IL8pvals(4,10);
-IL8pvals(7,10)=bhpvals0188stimVunstim(strcmp(Cytokines,'IL8'));
-IL8pvals(10,7)=IL8pvals(7,10);
-IL8pvals(5,11)=bhpvals0191preVpostStim(strcmp(Cytokines,'IL8'));
-IL8pvals(11,5)=IL8pvals(5,11);
-IL8pvals(8,11)=bhpvals0190stimVunstim(strcmp(Cytokines,'IL8'));
-IL8pvals(11,8)=IL8pvals(8,11);
-IL8pvals(6,12)=bhpvals0191preVpostStim(strcmp(Cytokines,'IL8'));
-IL8pvals(12,6)=IL8pvals(6,12);
-IL8pvals(9,12)=bhpvals0191stimVunstim(strcmp(Cytokines,'IL8'));
-IL8pvals(12,9)=IL8pvals(9,12);
-IL8pvals(IL8pvals>=0.05)=NaN; %Prevent non-significant ones from showing up
-
-[hb, ~, ~, ~, ~] = superbar(1:3,[mean(earlyNoStim0188),mean(earlyUnStim0188),mean(lateNoStim0188),mean(lateStim0188);
-    mean(earlyNoStim0190),mean(earlyUnStim0190),mean(lateNoStim0190),mean(lateStim0190);
-    mean(earlyNoStim0191),mean(earlyUnStim0191),mean(lateNoStim0191),mean(lateStim0191)], ...
-    'E',[std(earlyNoStim0188),std(earlyUnStim0188),std(lateNoStim0188),std(lateStim0188);
-    std(earlyNoStim0190),std(earlyUnStim0190),std(lateNoStim0190),std(lateStim0190);
-    std(earlyNoStim0191),std(earlyUnStim0191),std(lateNoStim0191),std(lateStim0191)],...
-    'P',IL8pvals,...
-    'BarFaceColor',permute([0.2, 0.8, 0.8; 0.4,0.6,0.6; .6,.6,.6; .8, 0.2, 0.2] ,[3,1,2]),...
-    'ErrorbarColor','k');
-xlabel('IL-10'); ylabel('Concentration (pg/mL)'); title('IL-8 Primaries')
-set(gca,'XTick',1:3,'XTickLabel',Labels,'XTickLabelRotation',90);
-legend(hb(1,1:4),{'Early, No Stim','Early, Pre-Stim','Late, No Stim','Late, Post-Stim'})
-
-% %IL-13
-% figure
-% sample1temp = regexp(uniqueSampleNames,'0188 D7 2');
-% earlyNoStim0188 = meanSampleConcTab.IL13(cellfun(@length,sample1temp(:))>0,:);
-% sample1temp = regexp(uniqueSampleNames,'0188 D7 1');
-% earlyUnStim0188 = meanSampleConcTab.IL13(cellfun(@length,sample1temp(:))>0,:);
-% sample1temp = regexp(uniqueSampleNames,'0188 D15 2');
-% lateNoStim0188 = meanSampleConcTab.IL13(cellfun(@length,sample1temp(:))>0,:);
-% sample1temp = regexp(uniqueSampleNames,'0188 D15 1');
-% lateStim0188 = meanSampleConcTab.IL13(cellfun(@length,sample1temp(:))>0,:);
-% 
-% sample2temp = regexp(uniqueSampleNames,'0190 D8 2');
-% earlyNoStim0190 = meanSampleConcTab.IL13(cellfun(@length,sample2temp(:))>0,:);
-% sample2temp = regexp(uniqueSampleNames,'0190 D8 1');
-% earlyUnStim0190 = meanSampleConcTab.IL13(cellfun(@length,sample2temp(:))>0,:);
-% sample2temp = regexp(uniqueSampleNames,'0190 D16 2');
-% lateNoStim0190 = meanSampleConcTab.IL13(cellfun(@length,sample2temp(:))>0,:);
-% sample2temp = regexp(uniqueSampleNames,'0190 D16 1');
-% lateStim0190 = meanSampleConcTab.IL13(cellfun(@length,sample2temp(:))>0,:);
-% 
-% sample3temp = regexp(uniqueSampleNames,'0191 D7 2');
-% earlyNoStim0191= meanSampleConcTab.IL13(cellfun(@length,sample3temp(:))>0,:);
-% sample3temp = regexp(uniqueSampleNames,'0191 D7 1');
-% earlyUnStim0191= meanSampleConcTab.IL13(cellfun(@length,sample3temp(:))>0,:);
-% sample3temp = regexp(uniqueSampleNames,'0191 D15 2');
-% lateNoStim0191= meanSampleConcTab.IL13(cellfun(@length,sample3temp(:))>0,:);
-% sample3temp = regexp(uniqueSampleNames,'0191 D15 1');
-% lateStim0191= meanSampleConcTab.IL13(cellfun(@length,sample3temp(:))>0,:);
-% 
-% Labels = {'0188','0190','0191'};
-% 
-% [hb, ~, ~, ~, ~] = superbar(1:3,[mean(earlyNoStim0188),mean(earlyUnStim0188),mean(lateNoStim0188),mean(lateStim0188);
-%     mean(earlyNoStim0190),mean(earlyUnStim0190),mean(lateNoStim0190),mean(lateStim0190);
-%     mean(earlyNoStim0191),mean(earlyUnStim0191),mean(lateNoStim0191),mean(lateStim0191)], ...
-%     'E',[std(earlyNoStim0188),std(earlyUnStim0188),std(lateNoStim0188),std(lateStim0188);
-%     std(earlyNoStim0190),std(earlyUnStim0190),std(lateNoStim0190),std(lateStim0190);
-%     std(earlyNoStim0191),std(earlyUnStim0191),std(lateNoStim0191),std(lateStim0191)],...
-%     'BarFaceColor',permute([0.2, 0.8, 0.8; 0.4,0.6,0.6; .6,.6,.6; .8, 0.2, 0.2] ,[3,1,2]),...
-%     'ErrorbarColor','k');
-% xlabel('Subjects'); ylabel('Concentration (pg/mL)'); title('IL-13 Primaries')
-% set(gca,'XTick',1:3,'XTickLabel',Labels,'XTickLabelRotation',90);
-% legend(hb(1,1:4),{'Early, No Stim','Early, Pre-Stim','Late, No Stim','Late, Post-Stim'})
-% 
-% 
